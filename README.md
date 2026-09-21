@@ -9,7 +9,7 @@ Each person must implement the following code:
 - `TimerCheck()`
 - `RedAction(p_vector)`
 
-## Vanessa ()
+## Vanessa Alvarez ()
 - `ColorCounter()`
 - `ColorLocator()`
 - `GreenAction(p_vector)`
