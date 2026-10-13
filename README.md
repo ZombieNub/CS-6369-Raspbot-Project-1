@@ -2,7 +2,7 @@
 Each person must implement the following code:
 ## Jackson Huffstutler (ZombieNub)
 - `IdleAction()`
-- `BlueAction(p_vector)`
+- `GreenAction(p_vector)`
 
 ## Shruthigna Chandupatla (shruthigna04)
 - `StartupAction()`
@@ -12,4 +12,4 @@ Each person must implement the following code:
 ## Vanessa Alvarez ()
 - `ColorCounter()`
 - `ColorLocator()`
-- `GreenAction(p_vector)`
+- `BlueAction(p_vector)`
