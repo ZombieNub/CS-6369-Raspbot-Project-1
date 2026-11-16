@@ -14,6 +14,11 @@ bot = Raspbot()
 SPIN_SPEED = 100
 TIME_LIMIT = 20
 
+TOLERANCE =0.25
+TRACK_MIN_SPEED = 30
+TRACK_GAIN =40
+SPIN_360_TIME = 2.5
+
 FL,FR,RL,RR = 0,1,2,3
 
 COLORS = {
@@ -52,33 +57,20 @@ def StartupAction():
 def TimerCheck(start_time, limit=TIME_LIMIT):
 	return(time.monotonic() -start_time) < limit
 
-def cameraCapture():
-    '''
-    Use this for RedAction and GreenAction too.
-    Returns 'frame', a snapshot that the camera takes.
-    '''
-    cap = cv2.VideoCapture(0)
+def cameraCapture(cap):
+    """
+    Capture one frame from the camera.
+    """
 
-    try:
-        if not cap.isOpened():
-            raise RuntimeError("Could not open RASPBOT camera")
+    ret, frame = cap.read()
 
-        ret, frame = cap.read()
+    if not ret:
+        raise RuntimeError("Could not capture camera frame")
 
-        if not ret:
-            raise RuntimeError("Could not capture camera frame")
-
-    finally:
-        cap.release()
-        return frame
+    return frame
 
 # An admittedly slapdash way to do round robin scheduling, but python doesn't have a interrupt thing
 ACTION_MAX_TIME = 10
-
-def IdleAction():
-    # The bot needs to do nothing and wait. For safety, I'm going to zero out the wheels in case a previous function set the wheels to some speed.
-    stop_all()
-    time.sleep(ACTION_MAX_TIME)
 
 def ColorCounter(image):
     """
@@ -94,6 +86,7 @@ def ColorCounter(image):
         total = 0
         for lower, upper in ranges:
             mask = cv2.inRange(hsv, lower, upper)
+            
             total += cv2.countNonZero(mask)
 
         color_counts[color] = total
@@ -144,109 +137,140 @@ def ColorLocator(image, color_counts):
     y = (center_y - height / 2) / (height / 2)
 
     return (x, y, color)
-
-def GreenAction(p_vector):
-    """
-    This is going to be a bit intricate so listen up. I'm using a multiline comment in case you're confused.
-    p_vector represents the object's location in the 'camera space' irrelevant of the 3D scene. So I'm lacking data to simply do an atan2
-    Furthermore, even if I could, rotation is entirely done by setting wheel speed. I cannot rotate to a given angle
-    Which means in order to rotate the raspbot to face the object, I need to keep rotating until the object is detected to be in the center
-
-    Also, I don't know what p_vector is. I'm going to assume it's either an array or tuple, so either [x, y] or (x, y).
-    Furthermore, if x is positive then the object is to the right, and if x is negative then the object is to the left
-    """
-    begin_time = time.monotonic()
     
-    tolerance = 0.25
-    v = p_vector
-    while math.abs(v[0])/2 < tolerance:
-        if time.monotonic() - begin_time < ACTION_MAX_TIME:
-            break
-        if v[0] > 0:
-            rotate_right(20 * math.abs(v[0])/2) # Rotate faster if the object is far away. Adjust if needed. Might not be needed at all
-        else:
-            rotate_left(20 * math.abs(v[0])/2)
-        v = GetPVector() # TODO: REPLACE WITH ColorLocator ONCE ITS IMPLEMENTED
+def RedAction(p_vector, red_end_time):
+    if red_end_time is None:
+        if p_vector is None or p_vector[2] != "red":
+            return None
 
-def BlueAction(p_vector):
-    """
-    Move until the command object is centered.
-    NOTE: I reversed the move_left() and move_right() functions. I'm not sure why the controls are reversed?
-    I also kept a lot of the speeds relatively slow and I'm assuming we loop until it's centered.
-    """
-    if p_vector is None:
+        s = SPIN_SPEED
+        set_wheels(-s, s, -s, s)
+        return time.monotonic() + SPIN_360_TIME / 2
+
+    if time.monotonic() >= red_end_time:
+        stop_all()
+        return None
+
+    return red_end_time
+
+def IdleAction(p_vector, red_end_time):
+    if red_end_time is not None or p_vector is not None:
+        return 
+    stop_all()
+
+
+def GreenAction(p_vector, red_end_time):
+    if red_end_time is not None:
+        return
+
+    if p_vector is None or p_vector[2] != "green":
         stop_all()
         return
 
-    tolerance = 0.25
+    x = p_vector[0]
+
+    if abs(x) <= TOLERANCE:
+        stop_all()
+        return
+
+    #speed = min(TRACK_MIN_SPEED + int(TRACK_GAIN * abs(x)), 80)
+    speed = SPIN_SPEED
 
     try:
-        while True:
-            # Check if the camera lost the object
-            if p_vector is None:
-                #print("Lost target object. Stopping.")
-                break
+        if x > 0:
+            set_wheels(speed, -speed, speed, -speed)
+            #set_wheels(-speed, speed, -speed, speed)
+        else:
+            set_wheels(-speed, speed, -speed, speed)
+            #set_wheels(speed, -speed, speed, -speed)
 
-            x = p_vector[0]
-
-            # Check if object is within tolerance of the center
-            if abs(x) <= tolerance:
-                #print("Target centered.")
-                break
-
-            if p_vector[2] != "blue":
-                #print("Lost target object. Stopping.")
-                break
-
-            # Speed proportional to how far the object is from center
-            speed = max(int(0.5 * abs(x)), 5)
-            #speed = min(max(speed, 10), 60)
-            #speed = 10
-
-            if x > 0:
-                #move_right(speed)
-                move_left(speed)
-            else:
-                #move_left(speed)
-                move_right(speed)
-
-            time.sleep(0.05)
-
-            # Capture new frame and update position vector
-            frame = cameraCapture()
-            p_vector = ColorLocator(frame, color_counts)
-
+        time.sleep(0.05)
     finally:
         stop_all()
 
-def main():
-	start_time=time.monotonic()
-	try:
-		StartupAction()
-		while True:
-			if not TimerCheck(start_time):	
-				break
+def BlueAction(p_vector, red_end_time):
+
+    # Let RedAction control the motors while its rotation is active
+    if red_end_time is not None:
+        return
+
+    # No blue object detected
+    if p_vector is None or p_vector[2] != "blue":
+        # Check if stop_all is needed
+        stop_all()
+        return
+
+    x = p_vector[0]
+
+    # Object is centered
+    if abs(x) <= TOLERANCE:
+        stop_all()
+        return
+
+    # Calculate movement speed based on distance from center
+    speed = min(TRACK_MIN_SPEED + int(TRACK_GAIN * abs(x)), 80)
+
+    try:
+        if x > 0:
+            # Object is on the right
+            move_left(speed)
+        else:
+            # Object is on the left
+            move_right(speed)
+
+        # Short movement before returning to scheduler
+        time.sleep(0.05)
+
+    finally:
+        stop_all()
+        
+#Round Robin Task Table
+TASK_TABLE = [
+	(TimerCheck,	("start_time",),	"running"),
+	(cameraCapture,	("cap",), 	"image"),
+	(ColorCounter, ("image",),	"color_counts"),
+	(ColorLocator,	("image", "color_counts"),	"p_vector"),
+	(RedAction, 	("p_vector", "red_end_time"), 	"red_end_time"),
+	(IdleAction, 	("p_vector", "red_end_time"), 	None),
+	(GreenAction, 	("p_vector", "red_end_time"), 	None),
+	(BlueAction, 	("p_vector", "red_end_time"), 	None),
+]
+
+def roundRobinScheduler(task_table, variables):
+	while True:
+		for task, inputs, output in task_table:
+			result = task(*[variables[name] for name in inputs])
+			
+			if output is not None:
+				variables[output] = result
 				
-			# Implement other functions here
-            image = get_camera_image()
-            color_counts = ColorCounter(image)
-            p_vector = ColorLocator(image, color_counts)
+			if not variables["running"]:
+				return
+	
 
-            # Comment out functions if needed for testing
-            if p_vector is None:
-                IdleAction()
-            elif p_vector[2] == "green":
-                GreenAction(p_vector)
-            elif p_vector[2] == "blue":
-                BlueAction(p_vector)
-            elif p_vector[2] == "red":
-                RedAction()
+def main():
+    start_time = time.monotonic()
 
-	finally:
-		stop_all()
+    cap = cv2.VideoCapture(0)
 
-'''
+    if not cap.isOpened():
+        raise RuntimeError("Could not open RASPBOT camera")
+        
+    try:
+        StartupAction()
+		
+        variables = {
+		"start_time": start_time,
+		"cap": cap,
+		"running": True,
+		"red_end_time": None,
+		}
+        
+        roundRobinScheduler(TASK_TABLE, variables)
+    
+    finally:
+        stop_all()
+        cap.release()
+
 if __name__ == "__main__":
 	main()
-
-'''
